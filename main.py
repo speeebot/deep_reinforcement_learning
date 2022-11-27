@@ -6,15 +6,16 @@
 
     MACOS:
     cd ~/Applications/coppeliaSim.app/Contents/MacOS
-    ./coppeliaSim -gREMOTEAPISERVERSERVICE_19000_FALSE_TRUE ~/Documents/school/fall22/intro_ai/project2_part1/2cups_Intro_to_AI.ttt
+    ./coppeliaSim -gREMOTEAPISERVERSERVICE_19000_FALSE_TRUE ~/Documents/school/fall22/intro_ai/project2_part3/2cups_Intro_to_AI.ttt
 
 """
 
 from environment import *
 
 def main():
-    env = CubesCups()
-    env.train()
+    #env = CubesCups()
+    agent = DQNAgent(7, 5) #(state_size, action_size)
+    agent.train()
 
 if __name__ == '__main__':
     main()

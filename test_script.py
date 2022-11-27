@@ -13,8 +13,8 @@
 from environment import *
 
 def main():
-    env = CubesCups()
-    env.run()
+    agent = DQNAgent(7, 5) #(state_size, action_size)
+    agent.run()
 
 if __name__ == '__main__':
     main()
