@@ -23,8 +23,8 @@ def get_distance_3d(a, b):
     a_x, a_y, a_z = a[0], a[1], a[2]
     b_x, b_y, b_z = b[0], b[1], b[2]
 
-    # Negative distance between source cup and receive cup
-    return -math.sqrt((a_x - b_x)**2 + (a_y - b_y)**2 + (a_z - b_z)**2)
+    # Distance between source cup and receive cup
+    return math.sqrt((a_x - b_x)**2 + (a_y - b_y)**2 + (a_z - b_z)**2)
 
 class DQNAgent:
     def __init__(self, state_size, action_size):
@@ -143,7 +143,7 @@ class DQNAgent:
             self.stop_simulation()
 
             if len(self.memory) > self.batch_size:
-                self.train_batch(self.batch_size)
+                self.train_batch()
 
             if e % 50 == 0:
                 self.save("weights_" + "{:04d}".format(e) + ".hdf5")
@@ -212,23 +212,37 @@ class DQNAgent:
         Move the simulation forward a frame and calculate the reward for the action taken
         '''
         # Calculate reward as the negative distance between the source up and the receiving cup
-        #reward = get_distance_3d(self.source_cup_position, self.receive_cup_position)
+        reward_ = -get_distance_3d(self.receive_cup_position, self.source_cup_position)
+        min_d = -get_distance_3d(self.receive_cup_position, [-0.8500, -0.1555, 0.7248])
+        if self.center_position > -0.8500:
+            max_d = -get_distance_3d(self.receive_cup_position, 
+                                    [self.center_position+high, -0.1555, 0.7248])
+        else:
+            max_d = -get_distance_3d(self.receive_cup_position, 
+                                    [self.center_position+low, -0.1555, 0.7248])
+
+        if max_d > reward_ > min_d:
+            print(f"{min_d}, {max_d}, {reward_}")
+        #print(self.normalize(reward_, min_d, max_d, 100))
         flag = 0
         for cube in self.cubes_positions:
-            if (-0.80 > cube[0] and cube[0] > -0.90):
+            # If cubes are within x bounds of receiving cup rim
+            # and above the table
+            if (-0.88 < cube[0] < -0.82) and (0.30 < cube[2] < 0.80):
                 flag += 1
                 
         # Both cubes are lined up along x-axis with receiving cup
         if flag == 2:
-            #print(f"reward: 1")
-            reward = 1
+            reward = 1000 - self.normalize(reward_, min_d, max_d, 100)
+            print(f"reward HIT: {reward}")
         else: 
-            reward = 0
+            reward = 0 - self.normalize(reward_, min_d, max_d, 100)
+            print(f"reward MISS: {reward}")
 
         # Rotate cup based on speed value
         self.rotate_cup()
-        # Move cup laterally based on selected action
-        self.move_cup(action)
+        # Move cup laterally based on selected action (minus 2 for indexing)
+        self.move_cup(action-2)
 
         # Get the position of both cubes
         for cube, i in zip(self.cubes_handles, range(0, 2)):
@@ -287,8 +301,8 @@ class DQNAgent:
     def save(self, name):
         self.model.save_weights(name)
 
-    def train_batch(self, batch_size):
-        minibatch = random.sample(self.memory, batch_size)
+    def train_batch(self):
+        minibatch = random.sample(self.memory, self.batch_size)
         for state, action, reward, next_state, done in minibatch:
             target = reward #if done
             if not done:
@@ -303,15 +317,15 @@ class DQNAgent:
     
     def act(self, state):
         if np.random.rand() <= self.epsilon:
-            return random.randrange(self.action_size) - 2
+            return random.randrange(self.action_size)
         act_values = self.model.predict(state)
         print(f"Selecting action based on values: {act_values[0]}\nAction selected: {np.argmax(act_values[0]) - 2}")
-        return np.argmax(act_values[0]) - 2
+        return np.argmax(act_values[0])
     
     def eval_act(self, state):
         act_values = self.model.predict(state)
         print(f"Selecting action based on values: {act_values[0]}\nAction selected: {np.argmax(act_values[0]) - 2}")
-        return np.argmax(act_values[0]) - 2
+        return np.argmax(act_values[0])
         
     def set_random_cup_position(self, rng):
         '''
@@ -507,6 +521,14 @@ class DQNAgent:
         for _ in range(60):
             self.triggerSim()
 
+    def normalize(self, val, min_val, max_val, q):
+        '''
+        norm_i = (x_i - min(x)) / max(x) - min(x)) * Q
+        Normalize values between 0 and Q
+        '''
+        norm_val = (val - min_val) / (max_val - min_val) * q
+        return norm_val
+
 class CubesCups(Env):
     def __init__(self, num_episodes=300,
                 min_lr=0.1, min_epsilon=0.1, 
@@ -565,7 +587,7 @@ class CubesCups(Env):
         Move the simulation forward a frame and calculate the reward for the action taken
         '''
         # Calculate reward as the negative distance between the source up and the receiving cup
-        reward = get_distance_3d(self.source_cup_position, self.receive_cup_position)
+        reward = -get_distance_3d(self.source_cup_position, self.receive_cup_position)
     
         # Rotate cup based on speed value
         self.rotate_cup()
