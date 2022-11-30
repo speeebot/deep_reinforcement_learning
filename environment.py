@@ -146,7 +146,7 @@ class DQNAgent:
                 self.train_batch()
 
             if e % 50 == 0:
-                self.save("weights_" + "{:04d}".format(e) + ".hdf5")
+                self.save("weights2_" + "{:04d}".format(e) + ".hdf5")
 
             # Append current episode's reward to total rewards list for later
             #rewards_all_episodes.append(rewards_current_episode)
@@ -213,31 +213,37 @@ class DQNAgent:
         '''
         # Calculate reward as the negative distance between the source up and the receiving cup
         reward_ = -get_distance_3d(self.receive_cup_position, self.source_cup_position)
-        min_d = -get_distance_3d(self.receive_cup_position, [-0.8500, -0.1555, 0.7248])
+        max_d = -get_distance_3d(self.receive_cup_position, [-0.8500, -0.1555, 0.7248])
         if self.center_position > -0.8500:
-            max_d = -get_distance_3d(self.receive_cup_position, 
+            min_d = -get_distance_3d(self.receive_cup_position, 
                                     [self.center_position+high, -0.1555, 0.7248])
         else:
-            max_d = -get_distance_3d(self.receive_cup_position, 
+            min_d = -get_distance_3d(self.receive_cup_position, 
                                     [self.center_position+low, -0.1555, 0.7248])
 
-        if max_d > reward_ > min_d:
+        if max_d < reward_ < min_d:
             print(f"{min_d}, {max_d}, {reward_}")
-        #print(self.normalize(reward_, min_d, max_d, 100))
+        print(f"reward: {self.normalize(reward_, min_d, max_d, 100)}")
+
+        reward = self.normalize(reward_, min_d, max_d, 100)
+
+        '''
         flag = 0
         for cube in self.cubes_positions:
             # If cubes are within x bounds of receiving cup rim
             # and above the table
             if (-0.88 < cube[0] < -0.82) and (0.30 < cube[2] < 0.80):
                 flag += 1
+        '''
                 
         # Both cubes are lined up along x-axis with receiving cup
-        if flag == 2:
+        '''if flag == 2:
             reward = 1000 - self.normalize(reward_, min_d, max_d, 100)
-            print(f"reward HIT: {reward}")
+            #print(f"reward HIT: {reward}")
         else: 
             reward = 0 - self.normalize(reward_, min_d, max_d, 100)
-            print(f"reward MISS: {reward}")
+            #print(f"reward MISS: {reward}")
+        '''
 
         # Rotate cup based on speed value
         self.rotate_cup()
@@ -308,8 +314,11 @@ class DQNAgent:
             if not done:
                 target = (reward + self.gamma * np.amax(self.model.predict(next_state)[0]))
             target_f = self.model.predict(state)
+
+            #print(f"TD error: {target - target_f[0][action]}")
+
             target_f[0][action] = target
-            self.model.fit(state, target_f, epochs=1, verbose=0)
+            self.model.fit(state, target_f, epochs=1, verbose=1)
         
         # Decay learning rate at end of episode
         if self.epsilon > self.epsilon_min:
