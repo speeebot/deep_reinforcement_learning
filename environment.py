@@ -13,7 +13,6 @@ import numpy as np
 sys.path.append('MacAPI')
 import sim
 
-
 np.set_printoptions(threshold=sys.maxsize)
 
 # Max movement along X
