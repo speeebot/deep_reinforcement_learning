@@ -1,6 +1,6 @@
 from gym import Env
 from gym.spaces import Discrete, Box
-from keras.models import Sequential 
+from keras.models import Sequential, load_model
 from keras.layers import Dense
 from tensorflow.keras.optimizers import Adam
 from collections import deque
@@ -17,6 +17,8 @@ np.set_printoptions(threshold=sys.maxsize)
 
 # Max movement along X
 low, high = -0.05, 0.05
+
+MODEL_NAME = 'model1'
 
 def get_distance_3d(a, b):
     a_x, a_y, a_z = a[0], a[1], a[2]
@@ -49,15 +51,17 @@ class DQNAgent:
         # Initialize observation space
         self.observation_space = Box(self.lower_bounds, self.upper_bounds, dtype=np.float32) 
 
-        self.memory = deque(maxlen=2000)
-        self.learning_rate = 0.001
+        self.memory = deque(maxlen=50000) # Remember 50 episodes
+        self.learning_rate = 0.00001
         self.model = self._build_model()
-        self.gamma = 0.95
+        
+        self.gamma = 0.99 # Discount rate
         self.epsilon = 1.0
         self.epsilon_decay = 0.995
         self.epsilon_min = 0.01
+        
         self.num_episodes = 300
-        self.batch_size = 32
+        self.batch_size = 64 # Number of samples to pull from memory for training
 
         self.state = None
         self.total_frames = 1000
@@ -78,8 +82,6 @@ class DQNAgent:
 
 
     def train(self):
-        #rewards_all_episodes = []
-        #rewards_filename = "rewards_history.txt"
 
         for e in range(self.num_episodes):
             print(f"Episode {e+1}:")
@@ -92,15 +94,11 @@ class DQNAgent:
             self.start_simulation()
 
             # Set initial position of the source cup and initialize state
-            #state = self.discretize_state(self.reset(rng))
             state = self.reset(rng)
+            # Reshape state for Keras
             state = np.reshape(state, [1, self.state_size])
 
-            #self.learning_rate = self.get_learning_rate(e)
-            #self.epsilon = self.get_epsilon(e)
             done = False
-            # Keep track of rewards for each episode, to be stored in a list
-            #rewards_current_episode = 0
 
             for j in range(velReal.shape[0]):
                 self.step_chores()
@@ -112,52 +110,35 @@ class DQNAgent:
 
                 # Take next action
                 next_state, reward, done, _ = self.step(action)
+                # Reshape state for Keras
+                next_state = np.reshape(next_state, [1, self.state_size])
 
-                # Normalize speed value for q_table
-                #self.speed = self.normalize(velReal[j], self.velReal_low, self.velReal_high)
-                # Calculate new state, continuous -> discrete
-                #new_state = self.discretize_state(obs)
-            
-                # Update Q-table for Q(s,a)
-                #print(f"State: {state}, Reward: {reward}, Action: {action}")
-                #self.update_q(state, action, new_state, reward)
-
-                next_state = np.reshape(next_state, [1, self.state_size]) # Reshape state for Keras
-
+                # Save current time step into deque
                 self.remember(state, action, reward, next_state, done)
 
                 # Update state variable
                 state = next_state
-
-                # Keep track of rewards for current episode
-                #rewards_current_episode += reward
                 
                 # Break if cup goes back to vertical position
                 if done:
                     print("episode: {}/{}, epsilon: {:.2}".format(e, self.num_episodes-1, self.epsilon))
                     break
-            #end for
+            #end for (current episode)
 
             # Stop simulation
             self.stop_simulation()
 
             if len(self.memory) > self.batch_size:
                 self.train_batch()
+        #end for (total episodes)
 
-            if e % 50 == 0:
-                self.save("weights2_" + "{:04d}".format(e) + ".hdf5")
+        # Insane save at the very end, hope it saves
+        self.save(f"models/{MODEL_NAME}.model")
 
-            # Append current episode's reward to total rewards list for later
-            #rewards_all_episodes.append(rewards_current_episode)
-
-        # Append this episodes rewards to a .txt file
-        #with open(rewards_filename, 'wb') as f:
-        #    np.savetxt(f, rewards_all_episodes)
-        #print(f"Saved rewards history to {rewards_filename}")
 
     def run(self):
-        # Load model weights from training
-        self.model.load_weights("weights_0250.hdf5")
+        # Load model from training
+        self.model = load_model(f"models/{MODEL_NAME}.model")
 
         for e in range(1):
             print(f"Episode {e+1}:")
@@ -170,7 +151,6 @@ class DQNAgent:
             self.start_simulation()
 
             # Set initial position of the source cup and initialize state
-            #state = self.discretize_state(self.reset(rng))
             state = self.reset(rng)
             state = np.reshape(state, [1, self.state_size])
 
@@ -186,17 +166,10 @@ class DQNAgent:
 
                 # Take next action
                 next_state, reward, done, _ = self.step(action)
-
-                # Normalize speed value for q_table
-                #self.speed = self.normalize(velReal[j], self.velReal_low, self.velReal_high)
-                # Calculate new state, continuous -> discrete
-                #new_state = self.discretize_state(obs)
             
                 #print(f"State: {state}, Reward: {reward}, Action: {action}")
 
                 next_state = np.reshape(next_state, [1, self.state_size]) # Reshape state for Keras
-
-                #self.remember(state, action, reward, next_state, done)
 
                 # Update state variable
                 state = next_state
@@ -210,44 +183,21 @@ class DQNAgent:
         '''
         Move the simulation forward a frame and calculate the reward for the action taken
         '''
-        # Calculate reward as the negative distance between the source up and the receiving cup
-        reward_ = -get_distance_3d(self.receive_cup_position, self.source_cup_position)
-        max_d = -get_distance_3d(self.receive_cup_position, [-0.8500, -0.1555, 0.7248])
-        if self.center_position > -0.8500:
-            min_d = -get_distance_3d(self.receive_cup_position, 
-                                    [self.center_position+high, -0.1555, 0.7248])
-        else:
-            min_d = -get_distance_3d(self.receive_cup_position, 
-                                    [self.center_position+low, -0.1555, 0.7248])
-
-        if max_d < reward_ < min_d:
-            print(f"{min_d}, {max_d}, {reward_}")
-        print(f"reward: {self.normalize(reward_, min_d, max_d, 100)}")
-
-        reward = self.normalize(reward_, min_d, max_d, 100)
-
-        '''
-        flag = 0
-        for cube in self.cubes_positions:
-            # If cubes are within x bounds of receiving cup rim
-            # and above the table
-            if (-0.88 < cube[0] < -0.82) and (0.30 < cube[2] < 0.80):
-                flag += 1
-        '''
-                
-        # Both cubes are lined up along x-axis with receiving cup
-        '''if flag == 2:
-            reward = 1000 - self.normalize(reward_, min_d, max_d, 100)
-            #print(f"reward HIT: {reward}")
-        else: 
-            reward = 0 - self.normalize(reward_, min_d, max_d, 100)
-            #print(f"reward MISS: {reward}")
-        '''
-
+        dist = self.get_reward()
         # Rotate cup based on speed value
         self.rotate_cup()
         # Move cup laterally based on selected action (minus 2 for indexing)
         self.move_cup(action-2)
+
+        # Calculate reward as the negative distance between the source up and the receiving cup
+        new_dist = self.get_reward()
+
+        # If new distance is less than old -> positive reward, else negative reward
+        reward = dist - new_dist
+        #if new_dist == dist and action != 2: # Action selected was anything but 0 and source cup did not move
+        #    reward = -0.05
+        #    print(f"reward for not moving due to limited range: {reward}, (action selected: {action-2})")
+        #print(f"reward: {reward}")
 
         # Get the position of both cubes
         for cube, i in zip(self.cubes_handles, range(0, 2)):
@@ -292,6 +242,41 @@ class DQNAgent:
 
         return self.state
 
+    def get_reward(self):
+        reward_ = -get_distance_3d(self.receive_cup_position, self.source_cup_position)
+        max_d = -get_distance_3d(self.receive_cup_position, [-0.8500, -0.1555, 0.7248])
+        if self.center_position > -0.8500:
+            min_d = -get_distance_3d(self.receive_cup_position, 
+                                    [self.center_position+high, -0.1555, 0.7248])
+        else:
+            min_d = -get_distance_3d(self.receive_cup_position, 
+                                    [self.center_position+low, -0.1555, 0.7248])
+        '''
+        flag = 0
+        for cube in self.cubes_positions:
+            # If cubes are within x bounds of receiving cup rim
+            # and above the table
+            if (-0.88 < cube[0] < -0.82) and (0.30 < cube[2] < 0.80):
+                flag += 1
+        '''
+                
+        # Both cubes are lined up along x-axis with receiving cup
+        '''if flag == 2:
+            reward = 1000 - self.normalize(reward_, min_d, max_d, 100)
+            #print(f"reward HIT: {reward}")
+        else: 
+            reward = 0 - self.normalize(reward_, min_d, max_d, 100)
+            #print(f"reward MISS: {reward}")
+        '''
+
+        #if max_d < reward_ < min_d:
+        #    print(f"{min_d}, {max_d}, {reward_}")
+        #print(f"reward: {self.normalize(reward_, min_d, max_d, 1)}")
+
+        reward = self.normalize(reward_, min_d, max_d, 1)
+
+        return reward
+
     def _build_model(self):
         model = Sequential()
         model.add(Dense(32, activation="relu", input_dim=self.state_size))
@@ -304,7 +289,7 @@ class DQNAgent:
         self.memory.append((state, action, reward, next_state, done))
     
     def save(self, name):
-        self.model.save_weights(name)
+        self.model.save(name)
 
     def train_batch(self):
         minibatch = random.sample(self.memory, self.batch_size)
@@ -313,10 +298,9 @@ class DQNAgent:
             if not done:
                 target = (reward + self.gamma * np.amax(self.model.predict(next_state)[0]))
             target_f = self.model.predict(state)
-
             #print(f"TD error: {target - target_f[0][action]}")
-
             target_f[0][action] = target
+
             self.model.fit(state, target_f, epochs=1, verbose=1)
         
         # Decay learning rate at end of episode
