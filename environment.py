@@ -2,12 +2,15 @@ from gym import Env
 from gym.spaces import Discrete, Box
 from keras.models import Sequential, load_model
 from keras.layers import Dense
+from keras.callbacks import TensorBoard
 from tensorflow.keras.optimizers import Adam
 from collections import deque
 
+import tensorflow as tf
 import sys
 import math
 import random
+import time
 import os.path
 import numpy as np
 sys.path.append('MacAPI')
@@ -20,6 +23,27 @@ low, high = -0.05, 0.05
 
 MODEL_NAME = 'model1'
 
+# Create folder to store model
+if not os.path.isdir('models'):
+    os.makedirs('models')
+
+GAMMA = 0.99 # Discount rate
+LEARNING_RATE = 0.001
+REPLAY_MEMORY_SIZE = 50000 # Remember 50 episodes
+MIN_REPLAY_MEMORY_SIZE = 1000 # Minimum number of steps in memory to start training
+MINIBATCH_SIZE = 64 # How many samples from memory to use for training
+UPDATE_TARGET_EVERY = 5 # How many episodes to update target
+
+EPISODES = 300
+
+# Exploration values
+epsilon = 1 # Not constant, will be decayed
+EPSILON_DECAY = 0.995
+MIN_EPSILON = 0.01
+
+# Stats
+AGGREGATE_STATS_EVERY = 50 # Episodes
+
 def get_distance_3d(a, b):
     a_x, a_y, a_z = a[0], a[1], a[2]
     b_x, b_y, b_z = b[0], b[1], b[2]
@@ -27,12 +51,36 @@ def get_distance_3d(a, b):
     # Distance between source cup and receive cup
     return math.sqrt((a_x - b_x)**2 + (a_y - b_y)**2 + (a_z - b_z)**2)
 
+class ModifiedTensorBoard(TensorBoard):
+    # Override init for initial step and writer (to have one log file for all .fit() call)
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.step = 1
+        self.writer = tf.summary.create_file_writer(self.log_dir)
+
+    # Overriding this method to stop default log writer
+    def set_model(self, model):
+        pass
+
+    # Override, saves logs with step number
+    def on_epoch_end(self, epoch, logs=None):
+        self.update_stats(**logs)
+
+    def on_batch_end(self, batch, logs=None):
+        pass
+
+    def on_train_end(self, _):
+        pass
+
+    def update_stats(self, **stats):
+        self._write_logs(stats, self.step)
+
 class DQNAgent:
     def __init__(self, state_size, action_size):
+        '''Gym environment variables'''
         self.state_size = state_size # 7 -> source_x, and x,y,z for each cube
         self.action_size = action_size # 5 -> [-2, -1, 0, 1, 2]
-        #100 for source_x, 100 for x,y,z of each cube
-        self.bins = (100, 100, 100, 100, 100, 100, 100)
+
         # [-2, -1, 0, 1, 2]
         self.action_space = Discrete(action_size)
         # Observation space bounds
@@ -51,18 +99,7 @@ class DQNAgent:
         # Initialize observation space
         self.observation_space = Box(self.lower_bounds, self.upper_bounds, dtype=np.float32) 
 
-        self.memory = deque(maxlen=50000) # Remember 50 episodes
-        self.learning_rate = 0.00001
-        self.model = self._build_model()
-        
-        self.gamma = 0.99 # Discount rate
-        self.epsilon = 1.0
-        self.epsilon_decay = 0.995
-        self.epsilon_min = 0.01
-        
-        self.num_episodes = 300
-        self.batch_size = 64 # Number of samples to pull from memory for training
-
+        '''Simulator variables'''
         self.state = None
         self.total_frames = 1000
         #j in range(velReal.shape[0])
@@ -80,11 +117,34 @@ class DQNAgent:
         self.center_position = None
         self.joint_position = None
 
+        '''DQN variables/hyperparameters'''
+        # Main model
+        self.model = self._build_model()
+        # Target model
+        self.target_model = self._build_model()
+        self.target_model.set_weights(self.model.get_weights())
+
+        # Remember last n steps of training as an array
+        self.memory = deque(maxlen=REPLAY_MEMORY_SIZE)
+
+        # Custom tensorboard object
+        self.tensorboard = ModifiedTensorBoard(log_dir="logs/{}-{}".format(MODEL_NAME, int(time.time())))
+
+        # Counter for when to update target network with main network weights
+        self.target_update_counter = 0
 
     def train(self):
+        global epsilon
 
-        for e in range(self.num_episodes):
+        for e in range(EPISODES):
             print(f"Episode {e+1}:")
+
+            # Update tensorboard step every episode
+            self.tensorboard.step = e
+
+            # Reset episode reward and step number every episode
+            episode_reward = 0
+            step = 1
 
             # Set rotation velocity randomly
             rng = np.random.default_rng()
@@ -96,7 +156,7 @@ class DQNAgent:
             # Set initial position of the source cup and initialize state
             state = self.reset(rng)
             # Reshape state for Keras
-            state = np.reshape(state, [1, self.state_size])
+            #state = np.reshape(state, [1, self.state_size])
 
             done = False
 
@@ -109,27 +169,33 @@ class DQNAgent:
                 action = self.act(state)
 
                 # Take next action
-                next_state, reward, done, _ = self.step(action)
-                # Reshape state for Keras
-                next_state = np.reshape(next_state, [1, self.state_size])
+                new_state, reward, done, _ = self.step(action)
+
+                # Count reward
+                episode_reward += reward
 
                 # Save current time step into deque
-                self.remember(state, action, reward, next_state, done)
+                self.remember((state, action, reward, new_state, done))
+                # Train main network
+                self.train_batch(done, step)
 
                 # Update state variable
-                state = next_state
+                state = new_state
+                step += 1
                 
                 # Break if cup goes back to vertical position
                 if done:
-                    print("episode: {}/{}, epsilon: {:.2}".format(e, self.num_episodes-1, self.epsilon))
                     break
             #end for (current episode)
 
             # Stop simulation
             self.stop_simulation()
 
-            if len(self.memory) > self.batch_size:
-                self.train_batch()
+            # Decay epsilon
+            if epsilon > MIN_EPSILON:
+                epsilon *= EPSILON_DECAY
+                epsilon = max(MIN_EPSILON, epsilon)
+
         #end for (total episodes)
 
         # Insane save at the very end, hope it saves
@@ -282,37 +348,72 @@ class DQNAgent:
         model.add(Dense(32, activation="relu", input_dim=self.state_size))
         model.add(Dense(32, activation="relu"))
         model.add(Dense(self.action_size, activation="linear"))
-        model.compile(loss="mse", optimizer=Adam(learning_rate=self.learning_rate))
+        model.compile(loss="mse", optimizer=Adam(learning_rate=LEARNING_RATE))
         return model
 
-    def remember(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done))
+    # Store step information to memory
+    # (state, action, reward, new_state, done)
+    def remember(self, transition):
+        self.memory.append(transition)
     
     def save(self, name):
         self.model.save(name)
 
-    def train_batch(self):
-        minibatch = random.sample(self.memory, self.batch_size)
-        for state, action, reward, next_state, done in minibatch:
-            target = reward #if done
-            if not done:
-                target = (reward + self.gamma * np.amax(self.model.predict(next_state)[0]))
-            target_f = self.model.predict(state)
-            #print(f"TD error: {target - target_f[0][action]}")
-            target_f[0][action] = target
+    def train_batch(self, terminal_state, step):
+        if len(self.memory) < MIN_REPLAY_MEMORY_SIZE:
+            return
+        # Get a minibatch of random samples from memory
+        minibatch = random.sample(self.memory, MINIBATCH_SIZE)
 
-            self.model.fit(state, target_f, epochs=1, verbose=1)
+        # Get current states from batch, query model for Q values
+        current_states = np.array([transition[0] for transition in minibatch])
+        current_qs_list = self.model.predict(current_states)
+
+        # Get future states from batch, query model for Q values
+        # When target network is being used, query it, otherwise main network queried
+        new_current_states = np.array([transition[3] for transition in minibatch])
+        future_qs_list = self.target_model.predict(new_current_states)
+
+        X = []
+        y = []
+
+        # Enumerate batches
+        for index, (current_state, action, reward, new_current_state, done) in enumerate(minibatch):
+            # If not terminal state, get new Q from future states, otherwise set to 0
+            if not done:
+                max_future_q = np.max(future_qs_list[index])
+                new_q = reward + GAMMA * max_future_q
+            else:
+                new_q = reward
+            
+            # Update Q value for given state
+            current_qs = current_qs_list[index]
+            current_qs[action] = new_q
+
+            # Append to training data
+            X.append(current_state)
+            y.append(current_qs)
         
-        # Decay learning rate at end of episode
-        if self.epsilon > self.epsilon_min:
-            self.epsilon *= self.epsilon_decay
+        #Fit on all samples as a batch, log terminal state only
+        self.model.fit(np.array(X), np.array(y), batch_size=MINIBATCH_SIZE, verbose=0, shuffle=False, callbacks=[self.tensoroard] if terminal_state else None)
+
+        # Update target network counter per episode
+        if terminal_state:
+            self.target_update_counter += 1
+        
+        # If counter reaches UPDATE_TARGET_EVERY, update target with weights of main network
+        if self.target_update_counter > UPDATE_TARGET_EVERY:
+            self.target_model.set_weights(self.model.get_weights())
+            self.target_update_counter = 0
+    
+    def get_qs(self, state):
+        return self.model.predict(np.array(state).reshape(-1, *state.shape))[0]
     
     def act(self, state):
-        if np.random.rand() <= self.epsilon:
-            return random.randrange(self.action_size)
-        act_values = self.model.predict(state)
-        print(f"Selecting action based on values: {act_values[0]}\nAction selected: {np.argmax(act_values[0]) - 2}")
-        return np.argmax(act_values[0])
+        if np.random.random() > epsilon:
+            return np.argmax(self.get_qs(state))
+        else:
+            return np.random.randint(0, self.action_size)
     
     def eval_act(self, state):
         act_values = self.model.predict(state)
