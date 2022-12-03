@@ -43,6 +43,7 @@ MIN_EPSILON = 0.01
 
 # Stats
 AGGREGATE_STATS_EVERY = 50 # Episodes
+ep_rewards = [-200]
 
 def get_distance_3d(a, b):
     a_x, a_y, a_z = a[0], a[1], a[2]
@@ -51,29 +52,44 @@ def get_distance_3d(a, b):
     # Distance between source cup and receive cup
     return math.sqrt((a_x - b_x)**2 + (a_y - b_y)**2 + (a_z - b_z)**2)
 
-class ModifiedTensorBoard(TensorBoard):
+class ModifiedTensorBoard(TensorBoard):        
     # Override init for initial step and writer (to have one log file for all .fit() call)
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.step = 1
         self.writer = tf.summary.create_file_writer(self.log_dir)
+        self._log_write_dir = self.log_dir
 
     # Overriding this method to stop default log writer
     def set_model(self, model):
-        pass
+        self.model = model
+
+        self._train_dir = os.path.join(self._log_write_dir, 'train')
+        self._train_step = self.model._train_counter
+
+        self._val_dir = os.path.join(self._log_write_dir, 'validation')
+        self._val_step = self.model._test_counter
+
+        self._should_write_train_graph = False
 
     # Override, saves logs with step number
     def on_epoch_end(self, epoch, logs=None):
         self.update_stats(**logs)
 
+    # Override, train one batch only, no need to save at epoch end
     def on_batch_end(self, batch, logs=None):
         pass
 
+    # Override, so writer doesn't close
     def on_train_end(self, _):
         pass
 
+    # Creates method for saving metrics
     def update_stats(self, **stats):
-        self._write_logs(stats, self.step)
+        with self.writer.as_default():
+            for key, value in stats.items():
+                tf.summary.scalar(key, value, step = self.step)
+                self.writer.flush()
 
 class DQNAgent:
     def __init__(self, state_size, action_size):
@@ -128,7 +144,7 @@ class DQNAgent:
         self.memory = deque(maxlen=REPLAY_MEMORY_SIZE)
 
         # Custom tensorboard object
-        self.tensorboard = ModifiedTensorBoard(log_dir="logs/{}-{}".format(MODEL_NAME, int(time.time())))
+        #self.tensorboard = ModifiedTensorBoard(log_dir="logs/{}-{}".format(MODEL_NAME, int(time.time())))
 
         # Counter for when to update target network with main network weights
         self.target_update_counter = 0
@@ -136,11 +152,11 @@ class DQNAgent:
     def train(self):
         global epsilon
 
-        for e in range(EPISODES):
-            print(f"Episode {e+1}:")
+        for e in range(1, EPISODES+1):
+            print(f"Episode {e}:")
 
             # Update tensorboard step every episode
-            self.tensorboard.step = e
+            #self.tensorboard.step = e
 
             # Reset episode reward and step number every episode
             episode_reward = 0
@@ -190,6 +206,16 @@ class DQNAgent:
 
             # Stop simulation
             self.stop_simulation()
+
+            # Append episode reward to rewards list and log stats 
+            # after AGGREGATE_STATS_EVERY number of episodes
+            ep_rewards.append(episode_reward)
+            if not e % AGGREGATE_STATS_EVERY or e == 1:
+                average_reward = sum(ep_rewards[-AGGREGATE_STATS_EVERY:])/len(ep_rewards[-AGGREGATE_STATS_EVERY:])
+                min_reward = min(ep_rewards[-AGGREGATE_STATS_EVERY:])
+                max_reward = max(ep_rewards[-AGGREGATE_STATS_EVERY:])
+                #self.tensorboard.update_stats(reward_avg=average_reward, reward_min=min_reward, reward_max=max_reward, epsilon=epsilon)
+                print(f'average_reward from episode {e-5} to {e}: {average_reward}\nepsilon: {epsilon}')
 
             # Decay epsilon
             if epsilon > MIN_EPSILON:
@@ -395,7 +421,7 @@ class DQNAgent:
             y.append(current_qs)
         
         #Fit on all samples as a batch, log terminal state only
-        self.model.fit(np.array(X), np.array(y), batch_size=MINIBATCH_SIZE, verbose=0, shuffle=False, callbacks=[self.tensoroard] if terminal_state else None)
+        self.model.fit(np.array(X), np.array(y), batch_size=MINIBATCH_SIZE, verbose=0, shuffle=False)
 
         # Update target network counter per episode
         if terminal_state:
