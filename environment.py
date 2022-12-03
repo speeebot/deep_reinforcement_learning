@@ -30,7 +30,7 @@ if not os.path.isdir('models'):
 GAMMA = 0.99 # Discount rate
 LEARNING_RATE = 0.001
 REPLAY_MEMORY_SIZE = 50000 # Remember 50 episodes
-MIN_REPLAY_MEMORY_SIZE = 1000 # Minimum number of steps in memory to start training
+MIN_REPLAY_MEMORY_SIZE = 5000 # Minimum number of steps in memory to start training
 MINIBATCH_SIZE = 64 # How many samples from memory to use for training
 UPDATE_TARGET_EVERY = 5 # How many episodes to update target
 
@@ -42,7 +42,7 @@ EPSILON_DECAY = 0.995
 MIN_EPSILON = 0.01
 
 # Stats
-AGGREGATE_STATS_EVERY = 50 # Episodes
+AGGREGATE_STATS_EVERY = 5 # Episodes
 ep_rewards = [-200]
 
 def get_distance_3d(a, b):
@@ -193,7 +193,8 @@ class DQNAgent:
                 # Save current time step into deque
                 self.remember((state, action, reward, new_state, done))
                 # Train main network
-                self.train_batch(done, step)
+                if not step % 4 or done:
+                    self.train_batch(done, step)
 
                 # Update state variable
                 state = new_state
@@ -260,8 +261,6 @@ class DQNAgent:
                 next_state, reward, done, _ = self.step(action)
             
                 #print(f"State: {state}, Reward: {reward}, Action: {action}")
-
-                next_state = np.reshape(next_state, [1, self.state_size]) # Reshape state for Keras
 
                 # Update state variable
                 state = next_state
@@ -393,12 +392,12 @@ class DQNAgent:
 
         # Get current states from batch, query model for Q values
         current_states = np.array([transition[0] for transition in minibatch])
-        current_qs_list = self.model.predict(current_states)
+        current_qs_list = self.model.predict(current_states, verbose=0)
 
         # Get future states from batch, query model for Q values
         # When target network is being used, query it, otherwise main network queried
         new_current_states = np.array([transition[3] for transition in minibatch])
-        future_qs_list = self.target_model.predict(new_current_states)
+        future_qs_list = self.target_model.predict(new_current_states, verbose=0)
 
         X = []
         y = []
@@ -431,9 +430,10 @@ class DQNAgent:
         if self.target_update_counter > UPDATE_TARGET_EVERY:
             self.target_model.set_weights(self.model.get_weights())
             self.target_update_counter = 0
+            print("Updated target network weights with main network weights.")
     
     def get_qs(self, state):
-        return self.model.predict(np.array(state).reshape(-1, *state.shape))[0]
+        return self.model.predict(np.array(state).reshape(-1, *state.shape), verbose=0)[0]
     
     def act(self, state):
         if np.random.random() > epsilon:
@@ -442,9 +442,7 @@ class DQNAgent:
             return np.random.randint(0, self.action_size)
     
     def eval_act(self, state):
-        act_values = self.model.predict(state)
-        print(f"Selecting action based on values: {act_values[0]}\nAction selected: {np.argmax(act_values[0]) - 2}")
-        return np.argmax(act_values[0])
+        return np.argmax(self.get_qs(state))
         
     def set_random_cup_position(self, rng):
         '''
