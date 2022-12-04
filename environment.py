@@ -263,8 +263,6 @@ class DQNAgent:
                 # Take next action
                 next_state, reward, done, _ = self.step(action)
             
-                #print(f"State: {state}, Reward: {reward}, Action: {action}")
-
                 # Update state variable
                 state = next_state
                 
