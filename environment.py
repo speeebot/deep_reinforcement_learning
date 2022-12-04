@@ -35,7 +35,6 @@ MINIBATCH_SIZE = 64 # How many samples from memory to use for training
 UPDATE_TARGET_EVERY = 5 # How many episodes to update target
 
 EPISODES = 500 # Number of episodes to train with
-TEST_EPISODES = 1 # Number of episodes to test with
 
 # Exploration values
 epsilon = 1 # Not constant, will be decayed
@@ -239,36 +238,35 @@ class DQNAgent:
         # Load model from training
         self.model = load_model(f"models/{MODEL_NAME}.model")
 
-        for e in range(TEST_EPISODES):
-            # Set rotation velocity randomly
-            rng = np.random.default_rng()
-            velReal = self.rotation_velocity(rng)
+        # Set rotation velocity randomly
+        rng = np.random.default_rng()
+        velReal = self.rotation_velocity(rng)
 
-            # Start simulation, process objects/handles
-            self.start_simulation()
+        # Start simulation, process objects/handles
+        self.start_simulation()
 
-            # Set initial position of the source cup and initialize state
-            state = self.reset(rng)
+        # Set initial position of the source cup and initialize state
+        state = self.reset(rng)
 
-            done = False
+        done = False
 
-            for j in range(velReal.shape[0]):
-                self.step_chores()
-                # Initialize the speed of the source cup at this frame
-                self.speed = velReal[j]
+        for j in range(velReal.shape[0]):
+            self.step_chores()
+            # Initialize the speed of the source cup at this frame
+            self.speed = velReal[j]
 
-                # Pick next action based on weights
-                action = self.eval_act(state)
+            # Pick next action based on weights
+            action = self.eval_act(state)
 
-                # Take next action
-                next_state, reward, done, _ = self.step(action)
+            # Take next action
+            next_state, reward, done, _ = self.step(action)
+        
+            # Update state variable
+            state = next_state
             
-                # Update state variable
-                state = next_state
-                
-                # Break if cup goes back to vertical position
-                if done:
-                    break
+            # Break if cup goes back to vertical position
+            if done:
+                break
 
     def step(self, action):
         '''
