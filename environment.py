@@ -21,7 +21,7 @@ np.set_printoptions(threshold=sys.maxsize)
 # Max movement along X
 low, high = -0.05, 0.05
 
-MODEL_NAME = 'model1'
+MODEL_NAME = 'model2'
 
 # Create folder to store model
 if not os.path.isdir('models'):
@@ -34,7 +34,7 @@ MIN_REPLAY_MEMORY_SIZE = 5000 # Minimum number of steps in memory to start train
 MINIBATCH_SIZE = 64 # How many samples from memory to use for training
 UPDATE_TARGET_EVERY = 5 # How many episodes to update target
 
-EPISODES = 300 # Number of episodes to train with
+EPISODES = 500 # Number of episodes to train with
 TEST_EPISODES = 1 # Number of episodes to test with
 
 # Exploration values
@@ -44,7 +44,7 @@ MIN_EPSILON = 0.01
 
 # Stats
 AGGREGATE_STATS_EVERY = 5 # Episodes
-ep_rewards = [-200]
+ep_rewards = []
 
 def get_distance_3d(a, b):
     a_x, a_y, a_z = a[0], a[1], a[2]
@@ -154,13 +154,14 @@ class DQNAgent:
         global epsilon
 
         for e in range(1, EPISODES+1):
-            print(f"Episode {e}:")
+            print(f'Episode {e}:')
 
             # Update tensorboard step every episode
             self.tensorboard.step = e
 
             # Reset episode reward and step number every episode
             episode_reward = 0
+            ep_td_errors = []
             step = 1
 
             # Set rotation velocity randomly
@@ -176,6 +177,9 @@ class DQNAgent:
             done = False
 
             for j in range(velReal.shape[0]):
+                # For stats logging
+                td_error = None
+                # Simulator setup
                 self.step_chores()
                 # Initialize the speed of the source cup at this frame
                 self.speed = velReal[j]
@@ -193,7 +197,9 @@ class DQNAgent:
                 self.remember((state, action, reward, new_state, done))
                 # Train main network
                 if not step % 4 or done:
-                    self.train_batch(done, step)
+                    td_error = self.train_batch(done, step)
+                    if td_error is not None:
+                        ep_td_errors.append([e, step, td_error])
 
                 # Update state variable
                 state = new_state
@@ -222,6 +228,8 @@ class DQNAgent:
                 epsilon *= EPSILON_DECAY
                 epsilon = max(MIN_EPSILON, epsilon)
 
+            # Save stats
+            self.save_stats(episode_reward, ep_td_errors)
         #end for (total episodes)
 
         # Insane save at the very end, hope it saves
@@ -320,6 +328,17 @@ class DQNAgent:
 
         return self.state
 
+    def save_stats(self, episode_reward, ep_td_errors):
+        # Save rewards history to file
+        with open('rewards_history.txt', 'a') as rewards_file:
+            rewards_file.write(f'{episode_reward}\n')
+        # Save TD-errors for each DQN update to file
+        with open('td_errors.txt', 'a') as td_errors_file:
+            if ep_td_errors:
+                last_step_index = np.argmax(ep_td_errors, axis = 0)[1]
+                err_ep, err_step, err_td = ep_td_errors[last_step_index]
+                td_errors_file.write(f'td_error(ep {err_ep}, step {err_step}: {err_td}\n')
+
     def get_reward(self):
         reward_ = -get_distance_3d(self.receive_cup_position, self.source_cup_position)
         max_d = -get_distance_3d(self.receive_cup_position, [-0.8500, -0.1555, 0.7248])
@@ -370,14 +389,19 @@ class DQNAgent:
         X = []
         y = []
 
+        td_errors = []
+
         # Enumerate batches
         for index, (current_state, action, reward, new_current_state, done) in enumerate(minibatch):
             # If not terminal state, get new Q from future states, otherwise set to 0
             if not done:
                 max_future_q = np.max(future_qs_list[index])
-                new_q = reward + GAMMA * max_future_q
+                new_q = reward + GAMMA * max_future_q # Target
             else:
                 new_q = reward
+
+            # Calculate TD error
+            td_errors.append(new_q - current_qs_list[index][action])
             
             # Update Q value for given state
             current_qs = current_qs_list[index]
@@ -388,7 +412,8 @@ class DQNAgent:
             y.append(current_qs)
         
         #Fit on all samples as a batch, log terminal state only
-        self.model.fit(np.array(X), np.array(y), batch_size=MINIBATCH_SIZE, verbose=0, shuffle=False)
+        self.model.fit(np.array(X), np.array(y), batch_size=MINIBATCH_SIZE, verbose=0, 
+                        shuffle=False, callbacks=[self.tensorboard] if terminal_state else None)
 
         # Update target network counter per episode
         if terminal_state:
@@ -399,6 +424,8 @@ class DQNAgent:
             self.target_model.set_weights(self.model.get_weights())
             self.target_update_counter = 0
             print("Updated target network weights with main network weights.")
+        
+        return sum(td_errors)/len(td_errors)
     
     def get_qs(self, state):
         return self.model.predict(np.array(state).reshape(-1, *state.shape), verbose=0)[0]
